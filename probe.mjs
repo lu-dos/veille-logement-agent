@@ -1,76 +1,34 @@
-// Sonde : un Chromium headless lance depuis un runner GitHub (IP datacenter)
-// arrive-t-il a lire Leboncoin et PAP ? C'est LA question qui decide si la collecte
-// peut tourner sans le PC.
-import { chromium } from 'playwright';
+// Sonde runner : bien'ici repond-il depuis une IP datacenter (GitHub Actions) ?
+// Si oui, la collecte entiere peut tourner sans le PC.
+const z = await fetch('https://res.bienici.com/zones.json?name=Palaiseau&type=city&postalCodes%5B%5D=91120', {
+  headers: { accept: 'application/json' },
+});
+const zj = await z.json();
+console.log('zones.json', z.status, JSON.stringify(zj).slice(0, 120));
 
-const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-
-const CIBLES = [
-  [
-    'LBC recherche',
-    'https://www.leboncoin.fr/recherche?category=10&real_estate_type=2&rooms=3-6&price=min-1200&locations=Palaiseau_91120&sort=time',
-  ],
-  [
-    'PAP recherche',
-    'https://www.pap.fr/annonce/locations-appartement-3-pieces-jusqu-a-1200-euros',
-  ],
-];
-
-function analyse(nom, html, status) {
-  const nd = /id="__NEXT_DATA__"/.test(html);
-  const cartes = (html.match(/class="search-list-item-alt"/g) || []).length;
-  const bloque = /datadome|captcha-delivery|Just a moment|Access Denied|unusual traffic/i.test(html);
-  const mots = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
-
-  console.log(
-    `${nom.padEnd(14)} http=${String(status).padEnd(4)} taille=${String(html.length).padStart(7)} ` +
-      `next_data=${nd ? 'oui' : 'non '} cartes_pap=${String(cartes).padStart(3)} blocage=${bloque ? 'OUI' : 'non'}`,
-  );
-  if (!nd && cartes === 0) console.log(`   debut: ${mots}`);
-  return nd || cartes > 0;
+const filters = {
+  size: 60, from: 0, filterType: 'rent', propertyType: ['flat'],
+  onTheMarket: [true], maxPrice: 1200, minRooms: 3, page: 1,
+  sortBy: 'publicationDate', sortOrder: 'desc',
+  zoneIdsByTypes: { zoneIds: ['-33504', '-33505', '-29251', '-57750'] },
+};
+const u = `https://www.bienici.com/realEstateAds.json?filters=${encodeURIComponent(JSON.stringify(filters))}&extensionType=extended`;
+const r = await fetch(u);
+const t = await r.text();
+let j = null;
+try { j = JSON.parse(t); } catch {}
+console.log('realEstateAds', r.status, String(r.headers.get('content-type')).split(';')[0], t.length, 'octets');
+if (j) {
+  console.log('total =', j.total, '| annonces =', (j.realEstateAds || []).length);
+  console.log('exemples :', (j.realEstateAds || []).slice(0, 5).map((a) => `${a.postalCode} ${a.price}EUR ${a.roomsQuantity}p/${a.bedroomsQuantity}ch ${a.publicationDate}`).join(' | '));
+} else {
+  console.log('non-JSON :', t.replace(/\s+/g, ' ').slice(0, 200));
 }
 
-const args = [
-  '--no-sandbox',
-  '--disable-blink-features=AutomationControlled',
-  '--disable-dev-shm-usage',
-];
-
-const browser = await chromium.launch({ headless: true, args });
-const ctx = await browser.newContext({
-  userAgent: UA,
-  locale: 'fr-FR',
-  timezoneId: 'Europe/Paris',
-  viewport: { width: 1440, height: 900 },
-  extraHTTPHeaders: { 'accept-language': 'fr-FR,fr;q=0.9,en;q=0.8' },
-});
-// masque le plus gros signal headless
-await ctx.addInitScript(() => {
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  Object.defineProperty(navigator, 'languages', { get: () => ['fr-FR', 'fr', 'en'] });
-  Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-});
-
-let ok = 0;
-for (const [nom, url] of CIBLES) {
-  const page = await ctx.newPage();
-  try {
-    const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(6000); // laisse passer le challenge JS
-    const html = await page.content();
-    const liens = await page.evaluate(
-      `document.querySelectorAll('a[href*="/ad/"], a[href*="/annonces/"]').length`,
-    );
-    if (analyse(nom, html, resp ? resp.status() : 0)) ok++;
-    console.log(`   annonces cliquables: ${liens} | titre: ${(await page.title()).slice(0, 50)}`);
-  } catch (e) {
-    console.log(`${nom.padEnd(14)} erreur ${String(e.message).slice(0, 90)}`);
-  } finally {
-    await page.close();
-  }
+// et une annonce bien'ici se lit-elle ?
+const ad = (j?.realEstateAds?.[0])?.id;
+if (ad) {
+  const ar = await fetch(`https://www.bienici.com/annonce/${ad}`, { redirect: 'follow' });
+  const at = await ar.text();
+  console.log('annonce', ar.status, at.length, 'octets |', (at.match(/<title>([^<]*)</) || [])[1]?.slice(0, 70));
 }
-
-await browser.close();
-console.log(ok ? `RESULTAT: ${ok}/${CIBLES.length} sources lisibles depuis le runner` : 'RESULTAT: aucune source lisible');
-process.exit(0);
